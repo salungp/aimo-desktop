@@ -3,7 +3,7 @@ import { loadDetail, loadHistory, useMarket, type DMarket, type Detail, type Ran
 import { usdCompact } from '../format'
 import { CaretDown, Check, HyperliquidMark, Info, LinkSimple, ListPlus, PolymarketMark, ShareFat, Star } from '../icons'
 import { href, marketHref, replace } from '../router'
-import { Coin, toast, useClearLogo } from '../components/primitives'
+import { brandColor, Coin, toast, useClearLogo } from '../components/primitives'
 import { AnimatedNumber, ProbChart, SERIES_COLORS, type Series } from '../components/ProbChart'
 
 const RANGES: Range[] = ['1H', '6H', '1D', '1W', '1M', 'All']
@@ -11,33 +11,20 @@ const pct0 = (n: number) => `${Math.round(n * 100)}%`
 const pct1 = (n: number) => `${(n * 100).toFixed(1)}%`
 const cents = (n: number) => `${(n * 100).toFixed(1)}¢`
 
-/* Brand glow: dominant colour of the market artwork (falls back per venue/coin). */
+/* Brand glow: dominant hue of the market artwork (falls back per venue/coin). */
 const COIN_COLOR: Record<string, string> = { BTC: '#F7931A', ETH: '#627EEA', SOL: '#9945FF', HYPE: '#98FBE5' }
 function useBrandColor(d?: Detail) {
   const fallback = d?.underlying ? COIN_COLOR[d.underlying] ?? '#A7F932' : '#F7931A'
-  const [c, setC] = useState(fallback)
+  const src = d?.image ?? (d?.underlying ? `https://app.hyperliquid.xyz/coins/${d.underlying}.svg` : undefined)
+  const [c, setC] = useState<string | null>(null)
   useEffect(() => {
-    setC(fallback)
-    if (!d?.image) return
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
-      try {
-        const cv = document.createElement('canvas'); cv.width = cv.height = 16
-        const x = cv.getContext('2d')!; x.drawImage(img, 0, 0, 16, 16)
-        const px = x.getImageData(0, 0, 16, 16).data
-        let best = [0, 0, 0], score = -1
-        for (let i = 0; i < px.length; i += 4) {
-          const [r, g, b] = [px[i], px[i + 1], px[i + 2]], mx = Math.max(r, g, b), mn = Math.min(r, g, b)
-          const s = (mx - mn) * (mx / 255) // prefer saturated + bright
-          if (s > score) { score = s; best = [r, g, b] }
-        }
-        if (score > 40) setC(`rgb(${best.join(',')})`)
-      } catch { /* CORS-tainted image: keep fallback */ }
-    }
-    img.src = d.image
-  }, [d?.image, d?.underlying])
-  return c
+    setC(null)
+    if (!src) return
+    let live = true
+    brandColor(src).then((v) => live && setC(v))
+    return () => { live = false }
+  }, [src])
+  return c ?? fallback
 }
 
 function Thumb({ d, size }: { d: Detail; size: number }) {

@@ -54,42 +54,76 @@ export const Sparkline = memo(function Sparkline({ data, up }: { data: number[];
   )
 })
 
-/* Logo transparency: solid artwork keeps the tile (fill + border + radius); cut-out
-   logos (transparent edges) render bare. Sampled once per src from the image's edge ring.
-   Polymarket's S3 sends no CORS headers, so pixels are read via a CORS-enabled resize
-   proxy (wsrv.nl) when the direct read fails; the displayed <img> still uses the original. */
-const clearCache = new Map<string, Promise<boolean>>()
+/* Logo pixels, sampled once per src at N×N. Polymarket's S3 sends no CORS headers, so when
+   the direct read is tainted the pixels come from a CORS-enabled resize proxy (wsrv.nl);
+   the displayed <img> always uses the original URL. */
 const N = 24
-function edgeClear(src: string) {
-  return new Promise<boolean | null>((res) => {
+const NO_CORS = /^https:\/\/polymarket-upload\.s3\./ // known to omit CORS headers: go straight to the proxy
+function readPixels(src: string) {
+  return new Promise<Uint8ClampedArray | null>((res) => {
     const img = new Image()
     img.crossOrigin = 'anonymous'
     img.onload = () => {
       try {
         const cv = document.createElement('canvas'); cv.width = cv.height = N
         const x = cv.getContext('2d', { willReadFrequently: true })!; x.drawImage(img, 0, 0, N, N)
-        const px = x.getImageData(0, 0, N, N).data
-        let edge = 0, clear = 0
-        for (let y = 0; y < N; y++) for (let xx = 0; xx < N; xx++) {
-          if (y && xx && y < N - 1 && xx < N - 1) continue
-          edge++; if (px[(y * N + xx) * 4 + 3] < 200) clear++
-        }
-        res(clear / edge > 0.1)
+        res(x.getImageData(0, 0, N, N).data)
       } catch { res(null) } // CORS-tainted
     }
     img.onerror = () => res(null)
     img.src = src
   })
 }
-function isTransparent(src: string) {
-  let p = clearCache.get(src)
+const pixelCache = new Map<string, Promise<Uint8ClampedArray | null>>()
+function pixels(src: string) {
+  let p = pixelCache.get(src)
   if (!p) {
-    p = edgeClear(src)
-      .then((v) => v ?? edgeClear(`https://wsrv.nl/?url=${encodeURIComponent(src)}&w=${N}&h=${N}&fit=fill&output=png`))
-      .then((v) => v ?? /\.svg(\?|$)/i.test(src))
-    clearCache.set(src, p)
+    const proxy = () => readPixels(`https://wsrv.nl/?url=${encodeURIComponent(src)}&w=${N}&h=${N}&fit=fill&output=png`)
+    p = NO_CORS.test(src) ? proxy() : readPixels(src).then((d) => d ?? proxy())
+    pixelCache.set(src, p)
   }
   return p
+}
+
+/* Transparency: solid artwork keeps the tile (fill + border + radius); cut-out logos
+   (>10% see-through pixels on the edge ring) render bare. */
+function isTransparent(src: string) {
+  return pixels(src).then((px) => {
+    if (!px) return /\.svg(\?|$)/i.test(src)
+    let edge = 0, clear = 0
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      if (y && x && y < N - 1 && x < N - 1) continue
+      edge++; if (px[(y * N + x) * 4 + 3] < 200) clear++
+    }
+    return clear / edge > 0.1
+  })
+}
+
+/* Brand colour: the dominant hue of the logo. Opaque, reasonably saturated pixels vote into
+   24 hue buckets (weighted by chroma, so black/white/grey never win); the
+   winning bucket's average hue is returned as a vivid, glow-ready colour. Monochrome logos get a
+   neutral glow; null = pixels unreadable. */
+export function brandColor(src: string) {
+  return pixels(src).then((px) => {
+    if (!px) return null
+    const B = 24, w = new Float64Array(B), hx = new Float64Array(B), hy = new Float64Array(B)
+    let total = 0
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue
+      const r = px[i] / 255, g = px[i + 1] / 255, b = px[i + 2] / 255
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn
+      total++
+      if (d < 0.08 || d / mx < 0.25) continue // greys, whites, near-blacks
+      const h = (mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60
+      const k = Math.floor(h / (360 / B)) % B, wt = d
+      w[k] += wt; hx[k] += Math.cos((h * Math.PI) / 180) * wt; hy[k] += Math.sin((h * Math.PI) / 180) * wt
+    }
+    let best = 0
+    for (let k = 1; k < B; k++) if (w[k] > w[best]) best = k
+    if (!total || w[best] / total < 0.02) return 'hsl(0 0% 80%)' // monochrome
+    const hue = Math.round(((Math.atan2(hy[best], hx[best]) * 180) / Math.PI + 360) % 360)
+    return `hsl(${hue} 90% 55%)`
+  })
 }
 /** Watches the <img> inside `ref` (including src swaps) and reports whether it is a transparent cut-out. */
 export function useClearLogo<T extends HTMLElement>() {
