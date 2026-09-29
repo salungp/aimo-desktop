@@ -20,6 +20,7 @@ export type Outcome = {
   expiry?: number       // ms epoch
   change?: number       // 24h move of the lead row's Yes price (Polymarket oneDayPriceChange)
   vol24?: number        // 24h volume
+  rules?: string        // resolution text when the card source already knows it (Hyperliquid templates)
 }
 export type Source = 'connecting' | 'live' | 'snapshot' | 'mock'
 export type Feed = { items: Outcome[]; status: 'idle' | 'loading' | 'ready' | 'error'; done: boolean; offset: number }
@@ -30,6 +31,7 @@ type State = {
   hlOutcomes: Outcome[]         // Hyperliquid HIP-4
   hlOutcomeStatus: Feed['status']
   details: Record<string, Detail>
+  books: Record<string, Book>    // `${detailKey}|${marketId}` → Yes-side order book
   hl: Source
   pm: Source
   tick: number
@@ -59,7 +61,7 @@ export const categorySlug = (label: string) => {
 }
 
 /* ─────────────────────────── store ─────────────────────────── */
-let state: State = { assets: {}, outcomes: [], feeds: {}, hlOutcomes: [], hlOutcomeStatus: 'idle', details: {}, hl: 'connecting', pm: 'connecting', tick: 0 }
+let state: State = { assets: {}, outcomes: [], feeds: {}, hlOutcomes: [], hlOutcomeStatus: 'idle', details: {}, books: {}, hl: 'connecting', pm: 'connecting', tick: 0 }
 const subs = new Set<() => void>()
 let raf = 0
 const emit = () => {
@@ -140,31 +142,42 @@ const hlUsd = (v: string) => '$' + Number(v).toLocaleString('en-US', { maximumFr
 // "perp:BTC" → BTC; builder perps ("xyz:CL") keep their ticker but get no coin logo.
 const hlPerp = (perp = '') => { const i = perp.lastIndexOf(':'); return { sym: perp.slice(i + 1), coin: i < 0 ? perp : undefined } }
 const hlTok = (outcome: number, side = 0) => `#${outcome * 10 + side}`
+const hlWhen = (t?: number) => (t ? new Date(t).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' UTC' : 'expiry')
+const HL_SETTLE = 'Settles automatically on Hyperliquid: Yes tokens of the winning outcome redeem for 1 USDC, all others for 0. Fully collateralized, no liquidation.'
+const hlSource = (d: Record<string, string>) => (d.officialSource ? ` Official source: ${d.officialSource}.` : '')
 
 /** Map one standalone HIP-4 outcome to a card; null when the template is unknown or already expired. */
 function hlStandalone(o: HLOutcomeSpec, now: number): Outcome | null {
   const d = kv(o.description || '')
   const base = { id: `hl-${o.outcome}`, source: 'hyperliquid' as const, volume: 0, url: 'https://app.hyperliquid.xyz/trade' }
-  const yes = (title: string, category: string, expiry?: number, underlying?: string): Outcome | null =>
-    expiry && expiry < now ? null : { ...base, title, category, expiry, underlying, kind: 'binary', rows: [{ label: 'Yes', p: 0.5, token: hlTok(o.outcome) }] }
+  const yes = (title: string, category: string, expiry: number | undefined, underlying: string | undefined, rules: string): Outcome | null =>
+    expiry && expiry < now ? null : { ...base, title, category, expiry, underlying, rules: `${rules}\n${HL_SETTLE}`, kind: 'binary', rows: [{ label: 'Yes', p: 0.5, token: hlTok(o.outcome) }] }
   if (d.class === 'priceBinary') {
-    return yes(`${d.underlying} above ${hlUsd(d.targetPrice)}${PERIOD[d.period] ? ` · ${PERIOD[d.period]}` : ''}`, 'Crypto', hlExpiry(d.expiry), d.underlying)
+    const t = hlExpiry(d.expiry)
+    return yes(`${d.underlying} above ${hlUsd(d.targetPrice)}${PERIOD[d.period] ? ` · ${PERIOD[d.period]}` : ''}`, 'Crypto', t, d.underlying,
+      `Resolves "Yes" if the ${d.underlying} price is above ${hlUsd(d.targetPrice)} at ${hlWhen(t)}. Otherwise "No".`)
   }
   switch (o.name) {
     case 'template:binaryPrice': case 'template:priceTouch': {
       const { sym, coin } = hlPerp(d.perp), t = hlExpiry(d.time)
       const verb = o.name === 'template:priceTouch' ? 'touches' : 'above'
-      return yes(`${sym} ${verb} ${hlUsd(d.threshold ?? d.target)}${t ? ` by ${hlDay(t)}` : ''}`, coin ? 'Crypto' : 'Finance', t, coin)
+      const px = hlUsd(d.threshold ?? d.target), feed = (d.priceDescription || sym).trim()
+      return yes(`${sym} ${verb} ${px}${t ? ` by ${hlDay(t)}` : ''}`, coin ? 'Crypto' : 'Finance', t, coin,
+        o.name === 'template:priceTouch'
+          ? `Resolves "Yes" if the ${feed} price reaches ${px} at any time before ${hlWhen(t)}. Otherwise "No".`
+          : `Resolves "Yes" if the ${feed} price is above ${px} at ${hlWhen(t)}. Otherwise "No".`)
     }
     case 'template:companyIpoConfirmed': {
       const t = hlExpiry(d.dateTime)
-      return yes(`${d.company} IPO by ${hlDay(t)}?`, 'Finance', t)
+      return yes(`${d.company} IPO by ${hlDay(t)}?`, 'Finance', t, undefined,
+        `Resolves "Yes" if ${d.company} completes an initial public offering by ${hlWhen(t)}. Otherwise "No".`)
     }
     case 'template:sportsContestWinner': {
       const t = hlExpiry(d.resolutionDeadline)
       if (!d.participantA || !d.participantB || (t && t < now)) return null
       return {
         ...base, title: `${d.participantA} vs ${d.participantB}`, category: 'Sports', expiry: hlExpiry(d.scheduledStart) ?? t, kind: 'versus',
+        rules: `Resolves to the winner of the ${d.competition ?? ''} ${(d.contestType ?? 'game').toLowerCase()} between ${d.participantA} and ${d.participantB}${d.countedPlay ? `, counting ${d.countedPlay}` : ''}.${hlSource(d)}\n${HL_SETTLE}`.replace(/\s+\./g, '.').replace(/ {2,}/g, ' '),
         rows: [{ label: d.participantA, p: 0.5, token: hlTok(o.outcome, 0) }, { label: d.participantB, p: 0.5, token: hlTok(o.outcome, 1) }],
       }
     }
@@ -190,18 +203,29 @@ function hlQuestion(q: HLQuestion, byId: Map<number, HLOutcomeSpec>, now: number
   if (rows.length < 2) return null
   const expiry = hlExpiry(d.resolutionDeadline ?? d.decisionDeadline)
   if (expiry && expiry < now) return null
-  let title: string, category: string
+  let title: string, category: string, rules: string
   switch (q.name) {
-    case 'template:sportsTournamentWinner': title = `${d.competition} ${d.season ?? ''} winner`.replace(/\s+/g, ' '); category = 'Sports'; break
-    case 'template:sportsContestResult': title = `${d.participantA} vs ${d.participantB}`; category = 'Sports'; break
-    case 'template:policyRateDecision': title = `${d.institution?.includes('Federal Reserve') ? 'Fed' : d.institution} decision · ${d.decisionLabel}`; category = 'Economy'; break
+    case 'template:sportsTournamentWinner':
+      title = `${d.competition} ${d.season ?? ''} winner`.replace(/\s+/g, ' '); category = 'Sports'
+      rules = `Resolves to the team that wins the ${d.competition}${d.season ? ` ${d.season}` : ''}.${hlSource(d)}`; break
+    case 'template:sportsContestResult':
+      title = `${d.participantA} vs ${d.participantB}`; category = 'Sports'
+      rules = `Resolves to the result of ${d.participantA} vs ${d.participantB} (${d.competition})${d.countedPlay ? `, counting ${d.countedPlay}` : ''}. A tie resolves to "Draw".${hlSource(d)}`; break
+    case 'template:policyRateDecision':
+      title = `${d.institution?.includes('Federal Reserve') ? 'Fed' : d.institution} decision · ${d.decisionLabel}`; category = 'Economy'
+      rules = `Resolves to the ${d.institution}'s decision on ${d.policyMeasure ?? 'its policy rate'} at the ${d.decisionLabel} meeting: an increase, no change, or a decrease.${hlSource(d)}`; break
     default: return null
   }
-  return { id: `hlq-${q.question}`, source: 'hyperliquid', title, category, volume: 0, url: 'https://app.hyperliquid.xyz/trade', kind: 'multi', rows, expiry }
+  return { id: `hlq-${q.question}`, source: 'hyperliquid', title, category, volume: 0, url: 'https://app.hyperliquid.xyz/trade', kind: 'multi', rows, expiry, rules: `${rules}\n${HL_SETTLE}` }
 }
 
-export async function loadHLOutcomes() {
-  if (state.hlOutcomeStatus === 'loading' || state.hlOutcomeStatus === 'ready' || state.hl === 'mock' || state.hl === 'snapshot') return
+let hlLoading: Promise<void> | null = null
+/** Load HIP-4 outcomes once; concurrent callers share the same request. */
+export function loadHLOutcomes(): Promise<void> {
+  if (state.hlOutcomeStatus === 'ready' || state.hl === 'mock' || state.hl === 'snapshot') return Promise.resolve()
+  return (hlLoading ??= fetchHLOutcomes().finally(() => { hlLoading = null }))
+}
+async function fetchHLOutcomes() {
   state.hlOutcomeStatus = 'loading'; emit()
   try {
     const meta = await hlPost<HLOutcomeMeta>({ type: 'outcomeMeta' })
@@ -474,9 +498,9 @@ function fromOutcome(o: Outcome, key: string): Detail {
     key, source: o.source, title: o.title, image: o.image, underlying: o.underlying, category: o.category,
     sub: o.underlying ? ({ BTC: 'Bitcoin', ETH: 'Ethereum', HYPE: 'Hyperliquid', SOL: 'Solana' } as Record<string, string>)[o.underlying] ?? o.underlying : undefined,
     volume: o.volume, endDate: o.expiry, url: o.url, status: 'loading', history: {}, histStatus: {},
-    rules: o.source === 'hyperliquid'
+    rules: o.rules ?? (o.source === 'hyperliquid'
       ? `Resolves "Yes" if ${o.underlying} is above the target price in the title at expiry${o.expiry ? ` (${new Date(o.expiry).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} UTC)` : ''}. Settles automatically on Hyperliquid: Yes tokens redeem for 1 USDH, No tokens for 0. Fully collateralized, no liquidation.`
-      : '',
+      : ''),
     markets: SNAPSHOT_EXTRA[o.id] && offline()
       ? SNAPSHOT_EXTRA[o.id].map(([label, p, volume], i) => ({ id: String(i), label, p, volume, closed: false }))
       : o.rows.map((r, i) => ({ id: String(i), label: o.kind === 'binary' ? o.title : r.label, p: r.p, token: r.token, volume: o.volume / Math.max(1, o.rows.length), closed: false })),
@@ -487,11 +511,18 @@ function fromOutcome(o: Outcome, key: string): Detail {
 export async function loadDetail(source: string, id: string) {
   const key = `${source}:${id}`
   if (state.details[key]?.status === 'ready' || state.details[key]?.status === 'loading') return
-  const seed = findOutcome(source, id)
-  state.details[key] = seed ? fromOutcome(seed, key) : {
+  const blank = (): Detail => ({
     key, source: source === 'hl' ? 'hyperliquid' : 'polymarket', title: '', category: '', volume: 0, rules: '', url: '',
     markets: [], history: {}, histStatus: {}, status: 'loading',
+  })
+  let seed = findOutcome(source, id)
+  // Deep link / reload straight into a Hyperliquid market: its card data comes from outcomeMeta, so fetch that first.
+  if (!seed && source === 'hl') {
+    state.details[key] = blank(); emit()
+    await loadHLOutcomes()
+    seed = findOutcome(source, id)
   }
+  state.details[key] = seed ? fromOutcome(seed, key) : blank()
   emit()
   const d = state.details[key]
   if (source === 'pm' && !offline()) {
@@ -567,3 +598,55 @@ export async function loadHistory(key: string, range: Range) {
   emit()
 }
 const hashN = (s: string) => ([...s].reduce((h, c) => (h * 33 + c.charCodeAt(0)) >>> 0, 5381) % 1000) / 1000
+
+/* ───────────────────────── Order book ──────────────────────── */
+export type Level = { p: number; s: number }
+/** Yes-side book: bids best-first (desc), asks best-first (asc). No-side is derived by inversion. */
+export type Book = { bids: Level[]; asks: Level[]; last?: number; status: 'loading' | 'ready' | 'error'; t: number }
+export const bookKey = (key: string, marketId: string) => `${key}|${marketId}`
+
+/** Fetch (or refresh) one market's order book. Safe to call on an interval. */
+export async function loadBook(key: string, marketId: string) {
+  const d = state.details[key], m = d?.markets.find((x) => x.id === marketId)
+  if (!d || !m) return
+  const k = bookKey(key, marketId), prev = state.books[k]
+  if (prev?.status === 'loading') return
+  state.books[k] = prev ? { ...prev, status: prev.status === 'ready' ? 'ready' : 'loading' } : { bids: [], asks: [], t: 0, status: 'loading' }
+  if (!prev) emit()
+  const lv = (xs: { price?: string; px?: string; size?: string; sz?: string }[]) =>
+    xs.map((x) => ({ p: Number(x.price ?? x.px), s: Number(x.size ?? x.sz) })).filter((x) => x.p > 0 && x.p < 1 && x.s > 0)
+  try {
+    let bids: Level[], asks: Level[], last: number | undefined
+    if (offline() || state.hl === 'mock' || !m.token) {
+      // Deterministic synthetic depth around the live price (demo / offline).
+      const h = hashN(m.id + m.label), tick = 0.01
+      const size = (i: number) => Math.round(60 + ((h * 997 + i * 131) % 1) * 2200 + i * 180)
+      asks = Array.from({ length: 6 }, (_, i) => ({ p: +(Math.min(0.99, m.p + tick * (i + 1))).toFixed(3), s: size(i) }))
+      bids = Array.from({ length: 6 }, (_, i) => ({ p: +(Math.max(0.01, m.p - tick * (i + 1))).toFixed(3), s: size(i + 7) }))
+      last = m.p
+    } else if (d.source === 'polymarket') {
+      // The book's own last_trade_price can report the complementary token; the dedicated endpoint is per-token.
+      const [r, lt] = await Promise.all([
+        fetch(`https://clob.polymarket.com/book?token_id=${m.token}`),
+        fetch(`https://clob.polymarket.com/last-trade-price?token_id=${m.token}`).then((x) => (x.ok ? x.json() : null)).catch(() => null) as Promise<{ price?: string } | null>,
+      ])
+      if (!r.ok) throw new Error(`book ${r.status}`)
+      const b: { bids: { price: string; size: string }[]; asks: { price: string; size: string }[] } = await r.json()
+      bids = lv(b.bids); asks = lv(b.asks); last = lt?.price ? Number(lt.price) : undefined
+    } else {
+      const [b, trades] = await Promise.all([
+        hlPost<{ levels: { px: string; sz: string }[][] }>({ type: 'l2Book', coin: m.token }),
+        hlPost<{ px: string; time: number }[] | null>({ type: 'recentTrades', coin: m.token }).catch(() => null),
+      ])
+      bids = lv(b.levels[0] ?? []); asks = lv(b.levels[1] ?? [])
+      const latest = (trades ?? []).reduce<{ px: string; time: number } | null>((a, t) => (!a || t.time > a.time ? t : a), null)
+      last = latest ? Number(latest.px) : undefined
+    }
+    bids.sort((a, b) => b.p - a.p); asks.sort((a, b) => a.p - b.p)
+    state.books[k] = { bids, asks, last, status: 'ready', t: Date.now() }
+  } catch {
+    const cur = state.books[k]
+    state.books[k] = { ...cur, status: cur.t ? 'ready' : 'error' }
+  }
+  emit()
+}
