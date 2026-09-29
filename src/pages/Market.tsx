@@ -167,7 +167,7 @@ function Ticket({ d, m, side, onSide }: { d: Detail; m?: DMarket; side: 'yes' | 
           <span className="cta__ok"><Check /> Order placed</span>
         </button>
         <span className="t-12r" style={{ display: 'flex', gap: 6, alignItems: 'center', color: 'var(--neutral-400)' }} data-tip="Aimo charges no fee on outcome trades">
-          <Info style={{ color: '#525252' }} /> 0% Aimo fees
+          <Info style={{ color: 'var(--neutral-500)' }} /> 0% Aimo fees
         </span>
       </div>
     </aside>

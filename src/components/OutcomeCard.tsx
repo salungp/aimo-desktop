@@ -57,7 +57,7 @@ export const OutcomeCard = memo(function OutcomeCard({ o, page, focused, style }
 
       <div className={`out-body${o.kind === 'binary' ? ' out-body--binary' : ''}`}>
         {o.kind === 'multi' &&
-          o.rows.map((r, i) => (
+          o.rows.slice(0, 2).map((r, i) => (
             <div className="out-row" key={r.label}>
               <span className="out-row__label t-14r">{r.label}</span>
               <span className="out-row__right">

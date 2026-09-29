@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { CATEGORIES, loadFeed, loadHLOutcomes, retryFeed, useMarket, type Outcome as O } from '../data/market'
+import { CATEGORIES, categorySlug, loadFeed, loadHLOutcomes, retryFeed, useMarket, type Outcome as O } from '../data/market'
 import { FireLine, Globe, HyperliquidMark, PolymarketMark, Stack } from '../icons'
 import { go, href, type Src } from '../router'
 import { OutcomeCard } from '../components/OutcomeCard'
+import { TrendingCarousel } from '../components/TrendingCarousel'
+import { AppCta, HotTopics, TopMovers } from '../components/OutcomeAside'
 
 /* Category tab bar — sliding lime indicator, roving focus, edge fade when scrollable. */
 function CategoryTabs({ tab, src }: { tab: string; src: Src }) {
@@ -74,7 +76,6 @@ function SourceFilter({ tab, src }: { tab: string; src: Src }) {
   )
 }
 
-const HL_TABS = new Set(['trending', 'crypto'])
 function mix(pm: O[], hl: O[]) {
   // Unified feed: Hyperliquid binaries slot in after the first row, then every 6 cards.
   const out = [...pm]
@@ -95,13 +96,12 @@ export function OutcomePage({ tab, src, focus }: { tab: string; src: Src; focus?
   const s = useMarket()
   const cat = CATEGORIES.find((c) => c.slug === tab) ?? CATEGORIES[0]
   const feed = s.feeds[cat.slug]
-  const wantsHL = src !== 'polymarket' && HL_TABS.has(cat.slug)
 
   useEffect(() => { if (src !== 'hyperliquid') loadFeed(cat.slug) }, [cat.slug, src, s.pm])
   useEffect(() => { if (src !== 'polymarket') loadHLOutcomes() }, [src, s.hl])
 
   const pmItems = src === 'hyperliquid' ? [] : feed?.items ?? []
-  const hlItems = wantsHL ? s.hlOutcomes : []
+  const hlItems = src === 'polymarket' ? [] : cat.slug === 'trending' ? s.hlOutcomes : s.hlOutcomes.filter((o) => categorySlug(o.category) === cat.slug)
   const items = src === 'unified' ? mix(pmItems, hlItems) : src === 'hyperliquid' ? hlItems : pmItems
   const loading = (src !== 'hyperliquid' && (!feed || feed.status === 'loading' || feed.status === 'idle') && !pmItems.length) ||
     (src === 'hyperliquid' && s.hlOutcomeStatus === 'loading')
@@ -130,43 +130,77 @@ export function OutcomePage({ tab, src, focus }: { tab: string; src: Src; focus?
   const title = cat.slug === 'trending' ? 'All markets' : `${cat.label} markets`
   const gridKey = `${cat.slug}:${src}`
 
+  // Rail + carousel draw from the Polymarket feed of the current tab (trending when the tab is HL-only).
+  const railFeed = s.feeds[cat.slug]?.items.length ? s.feeds[cat.slug].items : s.feeds.trending?.items ?? []
+  useEffect(() => { if (src === 'hyperliquid') loadFeed('trending') }, [src])
+  const trending = railFeed.filter((o) => o.kind === 'multi').slice(0, 6)
+  const hot = [...railFeed].sort((a, b) => (b.vol24 ?? b.volume) - (a.vol24 ?? a.volume)).slice(0, 5)
+  const movers = railFeed.some((o) => o.change != null)
+    ? railFeed.filter((o) => o.change != null).sort((a, b) => Math.abs(b.change!) - Math.abs(a.change!)).slice(0, 5)
+    : railFeed.filter((o) => !hot.includes(o)).slice(0, 5)
+  const gridHead = useRef<HTMLDivElement>(null)
+  // Publish the rail height so the sticky offset can fall back to bottom-pinning when it's taller than the viewport.
+  const rail = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = rail.current
+    if (!el) return
+    const ro = new ResizeObserver(() => el.style.setProperty('--rail-h', `${el.offsetHeight}px`))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const explore = () => gridHead.current?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+
   return (
     <>
       <CategoryTabs tab={cat.slug} src={src} />
-      <main className="main main--outcome">
-        <div className="sec-head">
-          <h1 className="t-20s" style={{ margin: 0 }}>{title}</h1>
-          <SourceFilter tab={cat.slug} src={src} />
-        </div>
+      <div className="out-page">
+        <main className="main main--outcome">
+          <div className="out-layout">
+            <div className="out-col">
+              <TrendingCarousel items={trending} />
+              <section className="out-all" aria-labelledby="h-all">
+                <div className="sec-head" ref={gridHead}>
+                  <h1 id="h-all" className="t-20s" style={{ margin: 0 }}>{title}</h1>
+                  <SourceFilter tab={cat.slug} src={src} />
+                </div>
 
-        {error ? (
-          <div className="empty">
-            <p className="t-16m" style={{ margin: 0 }}>Couldn't reach Polymarket</p>
-            <p className="t-14r muted" style={{ margin: 0 }}>Check your connection, then try again.</p>
-            <button className="see-more t-12m" onClick={() => retryFeed(cat.slug)}>Retry</button>
+                {error ? (
+                  <div className="empty">
+                    <p className="t-16m" style={{ margin: 0 }}>Couldn't reach Polymarket</p>
+                    <p className="t-14r muted" style={{ margin: 0 }}>Check your connection, then try again.</p>
+                    <button className="see-more t-12m" onClick={() => retryFeed(cat.slug)}>Retry</button>
+                  </div>
+                ) : !loading && !items.length ? (
+                  <div className="empty">
+                    <p className="t-16m" style={{ margin: 0 }}>No {src === 'hyperliquid' ? 'Hyperliquid' : ''} markets in {cat.label} right now</p>
+                    <p className="t-14r muted" style={{ margin: 0 }}>
+                      {src === 'hyperliquid' ? 'Hyperliquid lists crypto, sports and macro outcomes — try another tab.' : 'New markets list here as soon as they open.'}
+                    </p>
+                    {src !== 'unified' && <a className="see-more t-12m" href={href.outcome(cat.slug)}>Show all sources</a>}
+                  </div>
+                ) : (
+                  <div className="out-grid out-grid--page" key={gridKey}>
+                    {loading
+                      ? Array.from({ length: 9 }, (_, i) => <SkeletonCard key={i} i={i} />)
+                      : items.map((o, i) => (
+                          <OutcomeCard key={o.id} o={o} page tick={s.tick} focused={pulse === o.id} style={{ ['--i' as any]: Math.min(i, 11) }} />
+                        ))}
+                  </div>
+                )}
+                {!loading && src !== 'hyperliquid' && feed?.status === 'loading' && pmItems.length > 0 && (
+                  <div className="out-grid out-grid--page">{Array.from({ length: 3 }, (_, i) => <SkeletonCard key={i} i={i} />)}</div>
+                )}
+                <div ref={sentinel} style={{ height: 1 }} />
+              </section>
+            </div>
+            <div className="out-rail" ref={rail}>
+              <HotTopics items={hot} onExplore={explore} />
+              <TopMovers items={movers} />
+              <AppCta />
+            </div>
           </div>
-        ) : !loading && !items.length ? (
-          <div className="empty">
-            <p className="t-16m" style={{ margin: 0 }}>No {src === 'hyperliquid' ? 'Hyperliquid' : ''} markets in {cat.label} right now</p>
-            <p className="t-14r muted" style={{ margin: 0 }}>
-              {src === 'hyperliquid' ? 'Hyperliquid outcome markets are crypto price binaries.' : 'New markets list here as soon as they open.'}
-            </p>
-            {src !== 'unified' && <a className="see-more t-12m" href={href.outcome(cat.slug)}>Show all sources</a>}
-          </div>
-        ) : (
-          <div className="out-grid out-grid--page" key={gridKey}>
-            {loading
-              ? Array.from({ length: 8 }, (_, i) => <SkeletonCard key={i} i={i} />)
-              : items.map((o, i) => (
-                  <OutcomeCard key={o.id} o={o} page tick={s.tick} focused={pulse === o.id} style={{ ['--i' as any]: Math.min(i, 11) }} />
-                ))}
-          </div>
-        )}
-        {!loading && src !== 'hyperliquid' && feed?.status === 'loading' && pmItems.length > 0 && (
-          <div className="out-grid out-grid--page">{Array.from({ length: 4 }, (_, i) => <SkeletonCard key={i} i={i} />)}</div>
-        )}
-        <div ref={sentinel} style={{ height: 1 }} />
-      </main>
+        </main>
+      </div>
     </>
   )
 }

@@ -121,13 +121,13 @@ export function ProbChart({ series, range, loading, focus, now }: { series: Seri
         {!loading && series.map((s, i) => (
           <g key={s.id} transform={`translate(${plotW},${y(tails[i])})`} style={{ opacity: focus && focus !== s.id ? 0.25 : 1 }} className="chart__tail">
             <circle r={7} fill={s.color} className="chart__ping" />
-            <circle r={3.5} fill={s.color} stroke="#121212" strokeWidth={1.5} />
+            <circle r={3.5} fill={s.color} strokeWidth={1.5} style={{ stroke: 'var(--page)' }} />
           </g>
         ))}
         {hv && (
           <g pointerEvents="none">
             <line x1={hover!} x2={hover!} y1={TOP} y2={BOT} stroke="#737373" strokeWidth={1} strokeDasharray="2 3" />
-            {hv.rows.map((r) => <circle key={r.id} cx={hover!} cy={y(r.p)} r={4} fill={r.color} stroke="#121212" strokeWidth={2} />)}
+            {hv.rows.map((r) => <circle key={r.id} cx={hover!} cy={y(r.p)} r={4} fill={r.color} strokeWidth={2} style={{ stroke: 'var(--page)' }} />)}
           </g>
         )}
         {loading && <rect x={0} y={TOP} width={plotW} height={BOT - TOP} className="chart__shimmer" />}

@@ -18,6 +18,8 @@ export type Outcome = {
   kind: 'multi' | 'versus' | 'binary'
   rows: OutcomeRow[]    // multi: top 2 (Yes prob) · versus: 2 teams · binary: [Yes]
   expiry?: number       // ms epoch
+  change?: number       // 24h move of the lead row's Yes price (Polymarket oneDayPriceChange)
+  vol24?: number        // 24h volume
 }
 export type Source = 'connecting' | 'live' | 'snapshot' | 'mock'
 export type Feed = { items: Outcome[]; status: 'idle' | 'loading' | 'ready' | 'error'; done: boolean; offset: number }
@@ -124,32 +126,92 @@ export async function ensureSparks(coins: string[]) {
 }
 
 /* HIP-4 outcome markets. Side coin = "#<10·outcome + side>"; YES mid = probability. */
-type HLOutcomeMeta = { outcomes: { outcome: number; name: string; description: string; sideSpecs: { name: string }[] }[] }
+type HLOutcomeSpec = { outcome: number; name: string; description: string; sideSpecs: { name: string }[] }
+type HLQuestion = { question: number; name: string; description: string; fallbackOutcome: number; namedOutcomes: number[]; settledNamedOutcomes: number[] }
+type HLOutcomeMeta = { outcomes: HLOutcomeSpec[]; questions?: HLQuestion[] }
 const kv = (d: string) => Object.fromEntries(d.split('|').map((p) => p.split(':')).filter((x) => x.length >= 2).map(([k, ...v]) => [k, v.join(':')]))
 const hlExpiry = (s?: string) => {
   const m = s?.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/)
   return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : undefined
 }
 const PERIOD: Record<string, string> = { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h', '1d': 'daily', '1w': 'weekly' }
+const hlDay = (t?: number) => (t ? new Date(t).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }) : '')
+const hlUsd = (v: string) => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 4 })
+// "perp:BTC" → BTC; builder perps ("xyz:CL") keep their ticker but get no coin logo.
+const hlPerp = (perp = '') => { const i = perp.lastIndexOf(':'); return { sym: perp.slice(i + 1), coin: i < 0 ? perp : undefined } }
+const hlTok = (outcome: number, side = 0) => `#${outcome * 10 + side}`
+
+/** Map one standalone HIP-4 outcome to a card; null when the template is unknown or already expired. */
+function hlStandalone(o: HLOutcomeSpec, now: number): Outcome | null {
+  const d = kv(o.description || '')
+  const base = { id: `hl-${o.outcome}`, source: 'hyperliquid' as const, volume: 0, url: 'https://app.hyperliquid.xyz/trade' }
+  const yes = (title: string, category: string, expiry?: number, underlying?: string): Outcome | null =>
+    expiry && expiry < now ? null : { ...base, title, category, expiry, underlying, kind: 'binary', rows: [{ label: 'Yes', p: 0.5, token: hlTok(o.outcome) }] }
+  if (d.class === 'priceBinary') {
+    return yes(`${d.underlying} above ${hlUsd(d.targetPrice)}${PERIOD[d.period] ? ` · ${PERIOD[d.period]}` : ''}`, 'Crypto', hlExpiry(d.expiry), d.underlying)
+  }
+  switch (o.name) {
+    case 'template:binaryPrice': case 'template:priceTouch': {
+      const { sym, coin } = hlPerp(d.perp), t = hlExpiry(d.time)
+      const verb = o.name === 'template:priceTouch' ? 'touches' : 'above'
+      return yes(`${sym} ${verb} ${hlUsd(d.threshold ?? d.target)}${t ? ` by ${hlDay(t)}` : ''}`, coin ? 'Crypto' : 'Finance', t, coin)
+    }
+    case 'template:companyIpoConfirmed': {
+      const t = hlExpiry(d.dateTime)
+      return yes(`${d.company} IPO by ${hlDay(t)}?`, 'Finance', t)
+    }
+    case 'template:sportsContestWinner': {
+      const t = hlExpiry(d.resolutionDeadline)
+      if (!d.participantA || !d.participantB || (t && t < now)) return null
+      return {
+        ...base, title: `${d.participantA} vs ${d.participantB}`, category: 'Sports', expiry: hlExpiry(d.scheduledStart) ?? t, kind: 'versus',
+        rows: [{ label: d.participantA, p: 0.5, token: hlTok(o.outcome, 0) }, { label: d.participantB, p: 0.5, token: hlTok(o.outcome, 1) }],
+      }
+    }
+  }
+  return null
+}
+
+/** Map a HIP-4 question (group of named outcomes) to one multi-outcome card. */
+function hlQuestion(q: HLQuestion, byId: Map<number, HLOutcomeSpec>, now: number): Outcome | null {
+  const d = kv(q.description || '')
+  const label = (o: HLOutcomeSpec) => {
+    const od = kv(o.description || '')
+    if (od.participant) return od.participant
+    if (o.name === 'template:sportsContestDraw2') return 'Draw'
+    const rate = o.name.match(/^template:policyRate(Increase|Decrease|NoChange)$/)?.[1]
+    return rate ? (rate === 'NoChange' ? 'No change' : rate) : null
+  }
+  const rows = q.namedOutcomes
+    .filter((n) => !q.settledNamedOutcomes.includes(n))
+    .map((n) => byId.get(n))
+    .map((o) => (o && label(o) ? { label: label(o)!, p: 0.5, token: hlTok(o.outcome) } : null))
+    .filter(Boolean) as OutcomeRow[]
+  if (rows.length < 2) return null
+  const expiry = hlExpiry(d.resolutionDeadline ?? d.decisionDeadline)
+  if (expiry && expiry < now) return null
+  let title: string, category: string
+  switch (q.name) {
+    case 'template:sportsTournamentWinner': title = `${d.competition} ${d.season ?? ''} winner`.replace(/\s+/g, ' '); category = 'Sports'; break
+    case 'template:sportsContestResult': title = `${d.participantA} vs ${d.participantB}`; category = 'Sports'; break
+    case 'template:policyRateDecision': title = `${d.institution?.includes('Federal Reserve') ? 'Fed' : d.institution} decision · ${d.decisionLabel}`; category = 'Economy'; break
+    default: return null
+  }
+  return { id: `hlq-${q.question}`, source: 'hyperliquid', title, category, volume: 0, url: 'https://app.hyperliquid.xyz/trade', kind: 'multi', rows, expiry }
+}
 
 export async function loadHLOutcomes() {
   if (state.hlOutcomeStatus === 'loading' || state.hlOutcomeStatus === 'ready' || state.hl === 'mock' || state.hl === 'snapshot') return
   state.hlOutcomeStatus = 'loading'; emit()
   try {
     const meta = await hlPost<HLOutcomeMeta>({ type: 'outcomeMeta' })
-    state.hlOutcomes = meta.outcomes.map((o) => {
-      const d = kv(o.description || '')
-      const yes = `#${o.outcome * 10}`
-      const binary = d.class === 'priceBinary'
-      const title = binary
-        ? `${d.underlying} above $${Number(d.targetPrice).toLocaleString('en-US')}${PERIOD[d.period] ? ` · ${PERIOD[d.period]}` : ''}`
-        : o.name
-      return {
-        id: `hl-${o.outcome}`, source: 'hyperliquid', title, underlying: d.underlying, category: binary ? 'Crypto' : 'Hyperliquid',
-        volume: 0, url: 'https://app.hyperliquid.xyz/trade', kind: 'binary',
-        rows: [{ label: o.sideSpecs[0]?.name || 'Yes', p: 0.5, token: yes }], expiry: hlExpiry(d.expiry),
-      } satisfies Outcome
-    })
+    const now = Date.now()
+    const byId = new Map(meta.outcomes.map((o) => [o.outcome, o]))
+    const inQuestion = new Set((meta.questions ?? []).flatMap((q) => [...q.namedOutcomes, q.fallbackOutcome]))
+    const standalone = meta.outcomes.filter((o) => !inQuestion.has(o.outcome)).map((o) => hlStandalone(o, now))
+    const grouped = (meta.questions ?? []).map((q) => hlQuestion(q, byId, now))
+    state.hlOutcomes = ([...grouped, ...standalone].filter(Boolean) as Outcome[])
+      .sort((a, b) => (a.expiry ?? Infinity) - (b.expiry ?? Infinity))
     state.hlOutcomeStatus = 'ready'
     emit()
     await refreshHLOutcomePrices()
@@ -158,16 +220,21 @@ export async function loadHLOutcomes() {
     state.hlOutcomeStatus = 'error'; emit()
   }
 }
+/** Apply a mid price to every card row / detail market trading that outcome token. */
+function applyHLMid(tok: string, p: number) {
+  for (const o of state.hlOutcomes) {
+    let hit = false
+    for (const r of o.rows) if (r.token === tok) { r.p = p; hit = true }
+    if (hit && o.kind === 'multi') o.rows.sort((a, b) => b.p - a.p)
+  }
+  for (const d of Object.values(state.details)) for (const m of d.markets) if (m.token === tok) m.p = p
+}
 async function refreshHLOutcomePrices() {
-  await Promise.all(state.hlOutcomes.slice(0, 24).map(async (o) => {
-    try {
-      const b = await hlPost<{ levels: { px: string }[][] }>({ type: 'l2Book', coin: o.rows[0].token })
-      const bid = Number(b.levels[0]?.[0]?.px), ask = Number(b.levels[1]?.[0]?.px)
-      if (bid && ask) o.rows[0].p = (bid + ask) / 2
-      else if (bid || ask) o.rows[0].p = bid || ask
-    } catch {}
-  }))
-  emit()
+  try {
+    const mids = await hlPost<Record<string, string>>({ type: 'allMids' })
+    for (const k in mids) if (k[0] === '#') applyHLMid(k, Number(mids[k]))
+    emit()
+  } catch {}
 }
 
 function connectHLSocket() {
@@ -186,10 +253,7 @@ function connectHLSocket() {
       for (const k in mids) {
         const a = state.assets[k]
         if (a) { const p = Number(mids[k]); a.price = p; if (a.spark.length) a.spark[a.spark.length - 1] = p; continue }
-        if (k[0] === '#') {
-          for (const o of state.hlOutcomes) if (o.rows[0].token === k) o.rows[0].p = Number(mids[k])
-          for (const d of Object.values(state.details)) for (const m of d.markets) if (m.token === k) m.p = Number(mids[k])
-        }
+        if (k[0] === '#') applyHLMid(k, Number(mids[k]))
       }
       emit()
     }
@@ -199,8 +263,8 @@ function connectHLSocket() {
 }
 
 /* ───────────────────────── Polymarket ──────────────────────── */
-type GammaMarket = { id?: string; volume?: string; volumeNum?: number; question: string; groupItemTitle?: string; outcomes?: string; outcomePrices?: string; clobTokenIds?: string; active?: boolean; closed?: boolean }
-type GammaEvent = { id: string; slug: string; title: string; image?: string; icon?: string; volume?: number; endDate?: string; tags?: { label: string; slug?: string }[]; markets?: GammaMarket[] }
+type GammaMarket = { id?: string; volume?: string; volumeNum?: number; question: string; groupItemTitle?: string; outcomes?: string; outcomePrices?: string; clobTokenIds?: string; active?: boolean; closed?: boolean; oneDayPriceChange?: number }
+type GammaEvent = { id: string; slug: string; title: string; image?: string; icon?: string; volume?: number; volume24hr?: number; endDate?: string; tags?: { label: string; slug?: string }[]; markets?: GammaMarket[] }
 const parse = <T,>(s?: string): T | undefined => { try { return s ? JSON.parse(s) : undefined } catch { return undefined } }
 const HIDE_TAGS = new Set(['All', 'Featured', 'Hide From New', 'Recurring', 'Trending', 'Breaking News', 'Games', 'Up or Down'])
 
@@ -211,21 +275,23 @@ function toOutcome(ev: GammaEvent): Outcome | null {
     id: ev.id, source: 'polymarket' as const, title: ev.title, image: ev.image || ev.icon,
     category: ev.tags?.find((t) => !HIDE_TAGS.has(t.label))?.label ?? 'Trending', volume: Number(ev.volume) || 0,
     url: `https://polymarket.com/event/${ev.slug}`, expiry: ev.endDate ? Date.parse(ev.endDate) : undefined,
+    vol24: Number(ev.volume24hr) || undefined,
   }
   if (ms.length === 1) {
     const outs = parse<string[]>(ms[0].outcomes) ?? []
     const prices = (parse<string[]>(ms[0].outcomePrices) ?? []).map(Number)
     const toks = parse<string[]>(ms[0].clobTokenIds) ?? []
     if (outs.length !== 2) return null
-    if (outs[0] === 'Yes' || outs[0] === 'Up') return { ...base, kind: 'binary', rows: [{ label: outs[0], p: prices[0] ?? 0.5, token: toks[0] }] }
-    return { ...base, kind: 'versus', rows: outs.map((label, i) => ({ label, p: prices[i] ?? 0.5, token: toks[i] })) }
+    const change = ms[0].oneDayPriceChange
+    if (outs[0] === 'Yes' || outs[0] === 'Up') return { ...base, change, kind: 'binary', rows: [{ label: outs[0], p: prices[0] ?? 0.5, token: toks[0] }] }
+    return { ...base, change, kind: 'versus', rows: outs.map((label, i) => ({ label, p: prices[i] ?? 0.5, token: toks[i] })) }
   }
   const rows = ms
-    .map((m) => ({ label: m.groupItemTitle || m.question, p: Number((parse<string[]>(m.outcomePrices) ?? [])[0]) || 0, token: (parse<string[]>(m.clobTokenIds) ?? [])[0] }))
+    .map((m) => ({ label: m.groupItemTitle || m.question, p: Number((parse<string[]>(m.outcomePrices) ?? [])[0]) || 0, token: (parse<string[]>(m.clobTokenIds) ?? [])[0], d: m.oneDayPriceChange }))
     .filter((r) => r.p > 0.005 && r.p < 0.995)
     .sort((a, b) => b.p - a.p).slice(0, 2)
   if (rows.length < 2) return null
-  return { ...base, kind: 'multi', rows }
+  return { ...base, change: rows[0].d, kind: 'multi', rows: rows.map(({ d, ...r }) => r) }
 }
 
 const PAGE = 24
