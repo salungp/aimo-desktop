@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useRoute } from './router'
-import { Hero } from './components/Hero'
-import { Highlights, Navbar, Outcomes, Tables, Ticker } from './components/sections'
+import { Navbar, Outcomes, Tables, Ticker } from './components/sections'
+import { DiscoverRail, FeaturedMarkets } from './components/Discover'
 import { Toasts } from './components/primitives'
 import { OutcomePage } from './pages/Outcome'
 import { MarketPage } from './pages/Market'
@@ -19,9 +19,9 @@ export function App() {
       ) : r.page === 'outcome' ? (
         <OutcomePage tab={r.tab} src={r.src} focus={r.focus} />
       ) : (
-        <main className="main">
-          <Hero />
-          <Highlights />
+        <main className="main main--discover">
+          <FeaturedMarkets />
+          <DiscoverRail />
           <Tables />
           <Outcomes />
         </main>

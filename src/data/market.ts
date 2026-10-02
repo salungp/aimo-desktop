@@ -17,6 +17,7 @@ export type Outcome = {
   url: string
   kind: 'multi' | 'versus' | 'binary'
   rows: OutcomeRow[]    // multi: top 2 (Yes prob) · versus: 2 teams · binary: [Yes]
+  count?: number        // multi: open markets in the event
   expiry?: number       // ms epoch
   change?: number       // 24h move of the lead row's Yes price (Polymarket oneDayPriceChange)
   vol24?: number        // 24h volume
@@ -315,7 +316,7 @@ function toOutcome(ev: GammaEvent): Outcome | null {
     .filter((r) => r.p > 0.005 && r.p < 0.995)
     .sort((a, b) => b.p - a.p).slice(0, 2)
   if (rows.length < 2) return null
-  return { ...base, change: rows[0].d, kind: 'multi', rows: rows.map(({ d, ...r }) => r) }
+  return { ...base, change: rows[0].d, kind: 'multi', count: ms.length, rows: rows.map(({ d, ...r }) => r) }
 }
 
 const PAGE = 24

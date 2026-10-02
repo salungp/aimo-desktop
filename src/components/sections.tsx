@@ -1,13 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { href, marketHref, useRoute } from '../router'
+import { useEffect, useState } from 'react'
+import { href, useRoute } from '../router'
 import { OutcomeCard } from './OutcomeCard'
-import { Bell, Bolt, CaretRight, ChartBar, Fire, Lightning, Logo, Plus, Rocket, Search, Star, UserCircle } from '../icons'
-import {
-  biggestMoves, categorySlug, change, ensureSparks, moversPerps, newListings, pick, topVolumeAlt, trendingTokens,
-  type Asset, type Outcome, type Source, useMarket,
-} from '../data/market'
+import { MorePill } from './Discover'
+import { Bell, Lightning, Logo, Plus, Search, Star, UserCircle } from '../icons'
+import { change, ensureSparks, moversPerps, pick, trendingTokens, type Asset, type Source, useMarket } from '../data/market'
 import { displayName, displaySym } from '../data/names'
-import { ChangeBadge, Coin, CoinCombo, PriceText, Sparkline, toast, useClearLogo } from './primitives'
+import { ChangeBadge, Coin, CoinCombo, PriceText, Sparkline, toast } from './primitives'
 
 const hl = (a: Asset) => `https://app.hyperliquid.xyz/trade/${a.coin}`
 const open = (url: string) => window.open(url, '_blank', 'noopener')
@@ -48,67 +46,6 @@ export function Navbar() {
   )
 }
 
-/* ───────────── Highlight cards ───────────── */
-function HLCard({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return (
-    <article className="hl-card">
-      <span className="glow" />
-      <div className="hl-card__head">
-        <span className="hl-icon">{icon}</span>
-        <h3 className="t-16m" style={{ margin: 0 }}>{title}</h3>
-      </div>
-      <div>{children}</div>
-    </article>
-  )
-}
-function AssetRow({ a }: { a: Asset }) {
-  return (
-    <a className="hl-row" href={hl(a)} target="_blank" rel="noopener">
-      <span className="hl-row__name">
-        <Coin coin={a.coin} size={24} />
-        <span className="t-14m"><span className="q">{displayName(a.coin)}</span><span className="muted">/</span><span className="muted">{displaySym(a.coin)}</span></span>
-      </span>
-      <span className="hl-row__val">
-        <PriceText value={a.price} className="t-14m" />
-        <ChangeBadge value={change(a)} />
-      </span>
-    </a>
-  )
-}
-function OutcomeRowMini({ o }: { o: Outcome }) {
-  const [thumb, clear] = useClearLogo<HTMLSpanElement>()
-  return (
-    <div className="hl-row">
-      <span className="hl-row__name">
-        <span ref={thumb} className={`coin mini-thumb${clear ? ' is-clear' : ''}`} style={{ width: 24, height: 24 }}>{o.image ? <img src={o.image} alt="" /> : null}</span>
-        <span className="t-14m" style={{ minWidth: 0 }}><span className="q" title={o.title}>{o.title}</span></span>
-      </span>
-      <a className="chip-btn t-12m" href={marketHref(o)}>See details</a>
-    </div>
-  )
-}
-const Skel = () => <div className="hl-row"><span className="sk" style={{ width: 140, height: 16 }} /><span className="sk" style={{ width: 90, height: 16 }} /></div>
-const rows = (list: Asset[]) => (list.length ? list.map((a) => <AssetRow key={a.coin} a={a} />) : [0, 1, 2].map((i) => <Skel key={i} />))
-
-export function Highlights() {
-  const s = useMarket()
-  const crypto = s.outcomes.filter((o) => /crypto|bitcoin|ethereum|solana/i.test(o.category + o.title))
-  const polls = (crypto.length >= 2 ? crypto : s.outcomes).slice(0, 2)
-  const alt = topVolumeAlt(s)
-  return (
-    <section className="grid4" aria-label="Market highlights">
-      <HLCard icon={<ChartBar />} title="Market Highlights">{rows(pick(s, ['BTC', 'ETH', 'SOL']))}</HLCard>
-      <HLCard icon={<Rocket />} title="New listings on Aimo">{rows(newListings(s))}</HLCard>
-      <HLCard icon={<Fire />} title="Trending Now">
-        {polls[0] ? <OutcomeRowMini o={polls[0]} /> : <Skel />}
-        {alt ? <AssetRow a={alt} /> : <Skel />}
-        {polls[1] ? <OutcomeRowMini o={polls[1]} /> : <Skel />}
-      </HLCard>
-      <HLCard icon={<Bolt />} title="Biggest Move">{rows(biggestMoves(s))}</HLCard>
-    </section>
-  )
-}
-
 /* ───────────── Token tables ───────────── */
 const FAV_KEY = 'aimo:favs'
 const readFavs = (): string[] => { try { return JSON.parse(localStorage.getItem(FAV_KEY) || '[]') } catch { return [] } }
@@ -129,7 +66,7 @@ function TokenTable({ title, list, perps, favs, onFav }: { title: string; list: 
     <section className="tbl-wrap" aria-labelledby={`h-${title}`}>
       <div className="sec-head">
         <h2 id={`h-${title}`} className="t-20m">{title}</h2>
-        <a className="see-more t-12m" href={perps ? 'https://app.hyperliquid.xyz/trade' : 'https://app.hyperliquid.xyz/trade'} target="_blank" rel="noopener">See more <CaretRight /></a>
+        <MorePill href="https://app.hyperliquid.xyz/trade" external />
       </div>
       <div className="tbl" role="table">
         <div className="tbl__head t-12m" role="row">
@@ -148,11 +85,11 @@ function TokenTable({ title, list, perps, favs, onFav }: { title: string; list: 
               <span className="tok">
                 <CoinCombo coin={a.coin} />
                 <span className="tok__text" style={{ gap: perps ? 4 : 8 }}>
-                  <span className="tok__title t-16m">
+                  <span className="tok__title t-14m">
                     <span>{perps ? displaySym(a.coin) : displayName(a.coin)}</span>
                     {perps && <span className="lev t-10m"><Lightning />{a.maxLev}x</span>}
                   </span>
-                  <span className="t-12m muted">{perps ? displayName(a.coin) : displaySym(a.coin)}</span>
+                  <span className="tok__sub t-12m muted">{perps ? displayName(a.coin) : displaySym(a.coin)}</span>
                 </span>
               </span>
               <span className="cell-chart"><Sparkline data={a.spark} up={change(a) >= 0} /></span>
@@ -185,15 +122,15 @@ export function Tables() {
 export function Outcomes() {
   const s = useMarket()
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }} aria-labelledby="h-out">
+    <section className="outs" aria-labelledby="h-out">
       <div className="sec-head">
         <h2 id="h-out" className="t-20m">Trending outcome</h2>
-        <a className="see-more t-12m" href={href.outcome()}>See more <CaretRight /></a>
+        <MorePill href={href.outcome()} />
       </div>
-      <div className="out-grid">
+      <div className="out-grid out-grid--discover">
         {s.outcomes.length
-          ? s.outcomes.slice(0, 8).map((o) => <OutcomeCard key={o.id} o={o} tick={s.tick} />)
-          : Array.from({ length: 8 }, (_, i) => <div key={i} className="out-card"><div className="out-card__head"><span className="sk" style={{ width: 40, height: 40, borderRadius: 10 }} /><span className="sk" style={{ flex: 1, height: 16 }} /></div></div>)}
+          ? s.outcomes.slice(0, 6).map((o) => <OutcomeCard key={o.id} o={o} tick={s.tick} />)
+          : Array.from({ length: 6 }, (_, i) => <div key={i} className="out-card"><div className="out-card__head"><span className="sk" style={{ width: 40, height: 40, borderRadius: 10 }} /><span className="sk" style={{ flex: 1, height: 16 }} /></div></div>)}
       </div>
     </section>
   )
