@@ -149,9 +149,12 @@ export function useClearLogo<T extends HTMLElement>() {
 /* Coin logo from Hyperliquid's public icon set, monogram fallback. */
 const hue = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)
 export function Coin({ coin, size }: { coin: string; size: number }) {
-  const sources = [...new Set([coin, displaySym(coin)])].map((c) => `https://app.hyperliquid.xyz/coins/${c}.svg`)
+  // Spot tokens use "<TOKEN>_spot" logos; fall back to the perp logo, then a monogram.
+  const bare = coin.replace(/_spot$/, '')
+  const sources = [...new Set([coin, displaySym(coin), bare, displaySym(bare)])].map((c) => `https://app.hyperliquid.xyz/coins/${c}.svg`)
   const [i, setI] = useState(0)
-  const sym = displaySym(coin)
+  useEffect(() => setI(0), [coin])
+  const sym = displaySym(bare)
   return (
     <span className="coin" style={{ width: size, height: size }}>
       {i < sources.length ? (

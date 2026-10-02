@@ -3,10 +3,12 @@ import { useSyncExternalStore } from 'react'
 // Hash routes (work from file:// and any static host):
 //   #/                         Discover
 //   #/outcome/:tab?src=&focus= Outcome (tab = category slug, src = unified|hyperliquid|polymarket)
+//   #/trade/:market            Trade (market = perp coin "BTC" or "spot:HYPE")
 export type Route =
   | { page: 'discover' }
   | { page: 'outcome'; tab: string; src: Src; focus?: string }
   | { page: 'market'; source: 'pm' | 'hl'; id: string; m?: string; side: 'yes' | 'no' }
+  | { page: 'trade'; market: string }
 export type Src = 'unified' | 'hyperliquid' | 'polymarket'
 
 const parse = (): Route => {
@@ -16,6 +18,7 @@ const parse = (): Route => {
   if (seg[0] === 'market' && seg[2]) {
     return { page: 'market', source: seg[1] === 'hl' ? 'hl' : 'pm', id: decodeURIComponent(seg[2]), m: q.get('m') ?? undefined, side: q.get('side') === 'no' ? 'no' : 'yes' }
   }
+  if (seg[0] === 'trade') return { page: 'trade', market: decodeURIComponent(seg[1] || 'BTC') }
   if (seg[0] === 'outcome') {
     const src = (q.get('src') as Src) || 'unified'
     return { page: 'outcome', tab: seg[1] || 'trending', src: ['unified', 'hyperliquid', 'polymarket'].includes(src) ? src : 'unified', focus: q.get('focus') ?? undefined }
@@ -32,7 +35,11 @@ window.addEventListener('hashchange', () => {
   const swap = () => subs.forEach((f) => f())
   // Cross-page: View Transition (crossfade) when available; within a page: instant.
   const vt = (document as any).startViewTransition
-  if (pageChanged && vt && !matchMedia('(prefers-reduced-motion: reduce)').matches) vt.call(document, swap)
+  if (pageChanged && vt && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    // Heavy pages (Trade's chart) can outlast the transition's DOM-update budget; that only skips the crossfade.
+    const t = vt.call(document, swap)
+    for (const p of [t?.ready, t?.finished, t?.updateCallbackDone]) p?.catch?.(() => {})
+  }
   else swap()
   if (pageChanged) {
     const y = pageChanged && route.page === 'discover' ? discoverScroll : 0
@@ -46,6 +53,7 @@ export const useRoute = () => useSyncExternalStore((f) => { subs.add(f); return 
 
 export const href = {
   discover: '#/',
+  trade: (market = 'BTC') => `#/trade/${encodeURIComponent(market)}`,
   outcome: (tab = 'trending', o: { src?: Src; focus?: string } = {}) => {
     const q = new URLSearchParams()
     if (o.src && o.src !== 'unified') q.set('src', o.src)

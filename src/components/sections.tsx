@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
+import { toggleFav, useFavs } from '../data/favs'
 import { href, useRoute } from '../router'
 import { OutcomeCard } from './OutcomeCard'
 import { MorePill } from './Discover'
@@ -14,14 +15,14 @@ const open = (url: string) => window.open(url, '_blank', 'noopener')
 const TABS = [
   { label: 'Discover', to: href.discover },
   { label: 'Portfolio' },
-  { label: 'Trade' },
+  { label: 'Trade', to: href.trade() },
   { label: 'Outcome', to: href.outcome() },
 ]
 export function Navbar() {
   const r = useRoute()
-  const active = r.page === 'discover' ? 'Discover' : 'Outcome'
+  const active = r.page === 'discover' ? 'Discover' : r.page === 'trade' ? 'Trade' : 'Outcome'
   return (
-    <header className="navbar">
+    <header className={`navbar${r.page === 'trade' ? ' navbar--app' : ''}`}>
       <div className="navbar__left">
         <a href={href.discover} aria-label="Aimo home" className="brand"><Logo /></a>
         <nav className="navbar__tabs" aria-label="Primary">
@@ -47,16 +48,9 @@ export function Navbar() {
 }
 
 /* ───────────── Token tables ───────────── */
-const FAV_KEY = 'aimo:favs'
-const readFavs = (): string[] => { try { return JSON.parse(localStorage.getItem(FAV_KEY) || '[]') } catch { return [] } }
-function useFavs() {
-  const [f, setF] = useState<string[]>(readFavs)
-  const toggle = (c: string) => setF((x) => {
-    const n = x.includes(c) ? x.filter((y) => y !== c) : [...x, c]
-    try { localStorage.setItem(FAV_KEY, JSON.stringify(n)) } catch {}
-    toast(n.includes(c) ? `${displaySym(c)} added to watchlist` : `${displaySym(c)} removed from watchlist`)
-    return n
-  })
+function useWatch() {
+  const f = useFavs()
+  const toggle = (c: string) => toast(toggleFav(c) ? `${displaySym(c)} added to watchlist` : `${displaySym(c)} removed from watchlist`)
   return [f, toggle] as const
 }
 
@@ -109,7 +103,7 @@ function TokenTable({ title, list, perps, favs, onFav }: { title: string; list: 
 
 export function Tables() {
   const s = useMarket()
-  const [favs, onFav] = useFavs()
+  const [favs, onFav] = useWatch()
   return (
     <div className="grid2">
       <TokenTable title="Trending token" list={trendingTokens(s)} favs={favs} onFav={onFav} />
